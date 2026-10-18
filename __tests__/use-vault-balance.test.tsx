@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { act, renderHook } from '@testing-library/react'
 
 const vaultFetch = mock(async (_address: string) => ({
@@ -44,10 +44,6 @@ describe('useVaultBalance request ownership', () => {
       network: 'testnet',
     }))
     sacFetch.mockImplementation(async () => ({ displayBalance: 0, rawBalance: '0' }))
-  })
-
-  afterEach(() => {
-    mock.restore()
   })
 
   test('keeps account B balances when account A resolves later', async () => {
