@@ -149,9 +149,9 @@ describe('useVaultBalance request ownership', () => {
     const oldWallet = deferred<{ displayBalance: number; rawBalance: string }>()
     const newVault = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
     const newWallet = deferred<{ displayBalance: number; rawBalance: string }>()
+    let vaultCallsForAsset = 0
     vaultFetch.mockImplementation(() => (++vaultCallsForAsset === 1 ? oldVault.promise : newVault.promise))
     sacFetch.mockImplementation((_address, asset) => asset === 'asset-old' ? oldWallet.promise : newWallet.promise)
-    let vaultCallsForAsset = 0
 
     const { result } = renderHook(() => useVaultBalance())
     let oldLoad!: Promise<unknown>
