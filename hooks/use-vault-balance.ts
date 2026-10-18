@@ -190,6 +190,7 @@ export function useVaultBalance() {
     const identity = prepareIdentity(address, activeAddress.current === address ? activeAsset.current : undefined)
     const generation = ++requestGeneration.current
     setIsLoadingBalances(true)
+    setBalanceError(null)
     try {
       return await fetchVaultBalance(address, identity, generation)
     } finally {
