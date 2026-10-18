@@ -173,6 +173,24 @@ describe('useVaultBalance request ownership', () => {
     expect(result.current.walletBalance).toBe(4)
   })
 
+  test('keeps a successful wallet balance when the vault request fails', async () => {
+    vaultFetch.mockImplementation(async () => {
+      throw new Error('Vault service unavailable')
+    })
+    sacFetch.mockImplementation(async () => ({ displayBalance: 12.34, rawBalance: '1234' }))
+
+    const { result } = renderHook(() => useVaultBalance())
+    await act(async () => {
+      await result.current.loadUserBalancesRef.current('A', 'asset')
+    })
+
+    expect(result.current.walletBalance).toBe(12.34)
+    expect(result.current.walletRawBalance).toBe(1234)
+    expect(result.current.vaultBalance).toBe(0)
+    expect(result.current.balanceError).toBe('Vault service unavailable')
+    expect(result.current.isLoadingBalances).toBe(false)
+  })
+
   test('disconnect invalidation prevents pending requests from restoring balances', async () => {
     const vaultPending = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
     const walletPending = deferred<{ displayBalance: number; rawBalance: string }>()
