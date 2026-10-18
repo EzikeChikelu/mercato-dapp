@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { normalizeUSDC } from '@/lib/format'
+import { getClientVaultContractId } from '@/lib/defindex/client-config'
 import {
   hasClientVaultConfigured,
   vaultBalanceRequest,
@@ -21,7 +22,7 @@ function makeBalanceIdentity(address: string, assetContract?: string): string {
   return JSON.stringify([
     address.trim(),
     assetContract?.trim() ?? '',
-    process.env.NEXT_PUBLIC_DEFINDEX_VAULT_ADDRESS?.trim() ?? '',
+    getClientVaultContractId(),
     process.env.NEXT_PUBLIC_TRUSTLESS_NETWORK?.trim() || 'testnet',
   ])
 }
@@ -44,22 +45,9 @@ export function useVaultBalance() {
   const walletCache = useRef<WalletBalanceCache | null>(null)
   const vaultCache = useRef<VaultBalanceCache | null>(null)
 
-  const walletBalanceRef = useRef(0)
-  walletBalanceRef.current = walletBalance
-  const walletRawBalanceRef = useRef(0)
-  walletRawBalanceRef.current = walletRawBalance
-  const vaultBalanceRef = useRef(0)
-  vaultBalanceRef.current = vaultBalance
-  const vaultRawBalanceRef = useRef(0)
-  vaultRawBalanceRef.current = vaultRawBalance
-
   const clearBalances = useCallback(() => {
     walletCache.current = null
     vaultCache.current = null
-    walletBalanceRef.current = 0
-    walletRawBalanceRef.current = 0
-    vaultBalanceRef.current = 0
-    vaultRawBalanceRef.current = 0
     setWalletBalance(0)
     setWalletRawBalance(0)
     setVaultBalance(0)
@@ -214,6 +202,7 @@ export function useVaultBalance() {
       const identity = prepareIdentity(address, assetContract)
       const generation = ++requestGeneration.current
       setIsLoadingBalances(true)
+      setBalanceError(null)
       try {
         const [vaultAmt, walletAmt] = await Promise.all([
           fetchVaultBalance(address, identity, generation),
@@ -241,16 +230,6 @@ export function useVaultBalance() {
     dfTokens,
     isLoadingBalances,
     balanceError,
-    setWalletBalance,
-    setWalletRawBalance,
-    setVaultBalance,
-    setVaultRawBalance,
-    setDfTokens,
-    setBalanceError,
-    walletBalanceRef,
-    walletRawBalanceRef,
-    vaultBalanceRef,
-    vaultRawBalanceRef,
     getVaultBalance,
     loadUserBalancesRef,
     invalidateBalanceRequests,
