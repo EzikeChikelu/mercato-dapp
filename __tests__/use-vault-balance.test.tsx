@@ -108,6 +108,71 @@ describe('useVaultBalance request ownership', () => {
     expect(result.current.walletBalance).toBe(0)
   })
 
+  test('an older same-account refresh cannot clear loading or replace the newer result', async () => {
+    const oldVault = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
+    const oldWallet = deferred<{ displayBalance: number; rawBalance: string }>()
+    const newVault = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
+    const newWallet = deferred<{ displayBalance: number; rawBalance: string }>()
+    let vaultCalls = 0
+    let walletCalls = 0
+    vaultFetch.mockImplementation(() => (++vaultCalls === 1 ? oldVault.promise : newVault.promise))
+    sacFetch.mockImplementation(() => (++walletCalls === 1 ? oldWallet.promise : newWallet.promise))
+
+    const { result } = renderHook(() => useVaultBalance())
+    let oldLoad!: Promise<unknown>
+    let newLoad!: Promise<unknown>
+    await act(async () => {
+      oldLoad = result.current.loadUserBalancesRef.current('A', 'asset')
+      newLoad = result.current.loadUserBalancesRef.current('A', 'asset')
+      oldVault.resolve({ underlyingTotal: 1, underlyingTotalRaw: 10, dfTokens: 1, vaultAddress: 'vault', network: 'testnet' })
+      oldWallet.resolve({ displayBalance: 2, rawBalance: '20' })
+      await oldLoad
+    })
+
+    expect(result.current.isLoadingBalances).toBe(true)
+    expect(result.current.vaultBalance).toBe(0)
+    expect(result.current.walletBalance).toBe(0)
+
+    await act(async () => {
+      newVault.resolve({ underlyingTotal: 8, underlyingTotalRaw: 80, dfTokens: 8, vaultAddress: 'vault', network: 'testnet' })
+      newWallet.resolve({ displayBalance: 9, rawBalance: '90' })
+      await newLoad
+    })
+
+    expect(result.current.isLoadingBalances).toBe(false)
+    expect(result.current.vaultBalance).toBe(8)
+    expect(result.current.walletBalance).toBe(9)
+  })
+
+  test('changing the asset invalidates the previous asset request', async () => {
+    const oldVault = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
+    const oldWallet = deferred<{ displayBalance: number; rawBalance: string }>()
+    const newVault = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
+    const newWallet = deferred<{ displayBalance: number; rawBalance: string }>()
+    vaultFetch.mockImplementation(() => (++vaultCallsForAsset === 1 ? oldVault.promise : newVault.promise))
+    sacFetch.mockImplementation((_address, asset) => asset === 'asset-old' ? oldWallet.promise : newWallet.promise)
+    let vaultCallsForAsset = 0
+
+    const { result } = renderHook(() => useVaultBalance())
+    let oldLoad!: Promise<unknown>
+    let newLoad!: Promise<unknown>
+    await act(async () => {
+      oldLoad = result.current.loadUserBalancesRef.current('A', 'asset-old')
+      newLoad = result.current.loadUserBalancesRef.current('A', 'asset-new')
+      newVault.resolve({ underlyingTotal: 3, underlyingTotalRaw: 30, dfTokens: 3, vaultAddress: 'vault', network: 'testnet' })
+      newWallet.resolve({ displayBalance: 4, rawBalance: '40' })
+      await newLoad
+      oldVault.resolve({ underlyingTotal: 100, underlyingTotalRaw: 1000, dfTokens: 100, vaultAddress: 'vault', network: 'testnet' })
+      oldWallet.resolve({ displayBalance: 200, rawBalance: '2000' })
+      await oldLoad
+    })
+
+    expect(result.current.vaultBalance).toBe(3)
+    expect(result.current.vaultRawBalance).toBe(30)
+    expect(result.current.dfTokens).toBe(3)
+    expect(result.current.walletBalance).toBe(4)
+  })
+
   test('disconnect invalidation prevents pending requests from restoring balances', async () => {
     const vaultPending = deferred<{ underlyingTotal: number; underlyingTotalRaw: number; dfTokens: number; vaultAddress: string; network: string }>()
     const walletPending = deferred<{ displayBalance: number; rawBalance: string }>()
