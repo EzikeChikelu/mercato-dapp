@@ -1,0 +1,18 @@
+{
+  "default_branch": "develop",
+  "branches": [
+    "develop",
+    "fix/230-vault-balance-race",
+    "origin"
+  ],
+  "parent": {
+    "develop": null,
+    "fix/230-vault-balance-race": "develop",
+    "origin": "develop"
+  },
+  "order": [
+    "develop",
+    "fix/230-vault-balance-race",
+    "origin"
+  ]
+}
