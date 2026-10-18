@@ -9,6 +9,23 @@ import {
   isRateLimitMessage,
 } from '@/lib/defindex/vault-cache'
 
+type WalletBalanceCache = { identity: string; balance: number; rawBalance: number }
+type VaultBalanceCache = {
+  identity: string
+  balance: number
+  rawBalance: number
+  dfTokens: number
+}
+
+function makeBalanceIdentity(address: string, assetContract?: string): string {
+  return JSON.stringify([
+    address.trim(),
+    assetContract?.trim() ?? '',
+    process.env.NEXT_PUBLIC_DEFINDEX_VAULT_ADDRESS?.trim() ?? '',
+    process.env.NEXT_PUBLIC_TRUSTLESS_NETWORK?.trim() || 'testnet',
+  ])
+}
+
 export function useVaultBalance() {
   const [walletBalance, setWalletBalance] = useState(0)
   const [walletRawBalance, setWalletRawBalance] = useState(0)
@@ -17,6 +34,16 @@ export function useVaultBalance() {
   const [dfTokens, setDfTokens] = useState(0)
   const [isLoadingBalances, setIsLoadingBalances] = useState(false)
   const [balanceError, setBalanceError] = useState<string | null>(null)
+
+  // Every batch owns a generation. Only the latest generation may commit data,
+  // errors, or loading state; invalidation also covers a wallet disconnect.
+  const requestGeneration = useRef(0)
+  const activeIdentity = useRef<string | null>(null)
+  const activeAddress = useRef('')
+  const activeAsset = useRef<string | undefined>(undefined)
+  const walletCache = useRef<WalletBalanceCache | null>(null)
+  const vaultCache = useRef<VaultBalanceCache | null>(null)
+
   const walletBalanceRef = useRef(0)
   walletBalanceRef.current = walletBalance
   const walletRawBalanceRef = useRef(0)
@@ -26,30 +53,145 @@ export function useVaultBalance() {
   const vaultRawBalanceRef = useRef(0)
   vaultRawBalanceRef.current = vaultRawBalance
 
-  const getVaultAssetBalance = useCallback(
-    async (address: string, assetContract: string | undefined): Promise<number> => {
+  const clearBalances = useCallback(() => {
+    walletCache.current = null
+    vaultCache.current = null
+    walletBalanceRef.current = 0
+    walletRawBalanceRef.current = 0
+    vaultBalanceRef.current = 0
+    vaultRawBalanceRef.current = 0
+    setWalletBalance(0)
+    setWalletRawBalance(0)
+    setVaultBalance(0)
+    setVaultRawBalance(0)
+    setDfTokens(0)
+    setBalanceError(null)
+  }, [])
+
+  const invalidateBalanceRequests = useCallback(() => {
+    requestGeneration.current += 1
+    setIsLoadingBalances(false)
+  }, [])
+
+  const resetBalances = useCallback(() => {
+    invalidateBalanceRequests()
+    activeIdentity.current = null
+    activeAddress.current = ''
+    activeAsset.current = undefined
+    clearBalances()
+  }, [clearBalances, invalidateBalanceRequests])
+
+  const prepareIdentity = useCallback((address: string, assetContract?: string) => {
+    const identity = makeBalanceIdentity(address, assetContract)
+    if (activeIdentity.current !== identity) {
+      clearBalances()
+      activeIdentity.current = identity
+    }
+    activeAddress.current = address
+    activeAsset.current = assetContract
+    return identity
+  }, [clearBalances])
+
+  const fetchWalletBalance = useCallback(
+    async (address: string, assetContract: string | undefined, identity: string, generation: number): Promise<number> => {
       if (!address || !assetContract) {
-        setWalletBalance(0)
-        setWalletRawBalance(0)
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          walletCache.current = { identity, balance: 0, rawBalance: 0 }
+          setWalletBalance(0)
+          setWalletRawBalance(0)
+        }
         return 0
       }
 
       try {
         const payload = await sacBalanceRequest.fetch(address, assetContract)
         const normalized = normalizeUSDC(payload.displayBalance ?? 0)
-        const raw =
+        const parsedRaw =
           typeof payload.rawBalance === 'string' && payload.rawBalance
             ? Number(payload.rawBalance)
             : 0
-        setWalletBalance(normalized)
-        setWalletRawBalance(Number.isFinite(raw) ? raw : 0)
+        const raw = Number.isFinite(parsedRaw) ? parsedRaw : 0
+
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          walletCache.current = { identity, balance: normalized, rawBalance: raw }
+          setWalletBalance(normalized)
+          setWalletRawBalance(raw)
+        }
         return normalized
       } catch {
-        if (walletRawBalanceRef.current > 0) {
-          return walletBalanceRef.current
+        const cached = walletCache.current
+        if (cached?.identity === identity && cached.rawBalance > 0) return cached.balance
+
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          walletCache.current = { identity, balance: 0, rawBalance: 0 }
+          setWalletBalance(0)
+          setWalletRawBalance(0)
         }
-        setWalletBalance(0)
-        setWalletRawBalance(0)
+        return 0
+      }
+    },
+    [],
+  )
+
+  const fetchVaultBalance = useCallback(
+    async (address: string, identity: string, generation: number): Promise<number> => {
+      if (!address) {
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          vaultCache.current = { identity, balance: 0, rawBalance: 0, dfTokens: 0 }
+          setVaultBalance(0)
+          setVaultRawBalance(0)
+          setDfTokens(0)
+        }
+        return 0
+      }
+
+      if (!hasClientVaultConfigured()) {
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          setBalanceError(null)
+          vaultCache.current = { identity, balance: 0, rawBalance: 0, dfTokens: 0 }
+          setVaultBalance(0)
+          setVaultRawBalance(0)
+          setDfTokens(0)
+        }
+        return 0
+      }
+
+      try {
+        const payload = await vaultBalanceRequest.fetch(address)
+        const normalized = normalizeUSDC(payload.underlyingTotal ?? 0)
+        const rawTotal =
+          typeof payload.underlyingTotalRaw === 'number' && Number.isFinite(payload.underlyingTotalRaw)
+            ? payload.underlyingTotalRaw
+            : 0
+        const tokens =
+          typeof payload.dfTokens === 'number' && Number.isFinite(payload.dfTokens)
+            ? payload.dfTokens
+            : 0
+
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          vaultCache.current = { identity, balance: normalized, rawBalance: rawTotal, dfTokens: tokens }
+          setBalanceError(null)
+          setVaultBalance(normalized)
+          setVaultRawBalance(rawTotal)
+          setDfTokens(tokens)
+        }
+        return normalized
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to load Mercato vault balance'
+        const cached = vaultCache.current
+
+        if (isRateLimitMessage(message)) {
+          return cached?.identity === identity ? cached.balance : 0
+        }
+
+        if (generation === requestGeneration.current && activeIdentity.current === identity) {
+          vaultCache.current = { identity, balance: 0, rawBalance: 0, dfTokens: 0 }
+          setBalanceError(message)
+          setVaultBalance(0)
+          setVaultRawBalance(0)
+          setDfTokens(0)
+        }
         return 0
       }
     },
@@ -57,70 +199,35 @@ export function useVaultBalance() {
   )
 
   const getVaultBalance = useCallback(async (address: string): Promise<number> => {
-    if (!address) {
-      setVaultBalance(0)
-      setVaultRawBalance(0)
-      setDfTokens(0)
-      return 0
-    }
-
-    if (!hasClientVaultConfigured()) {
-      setBalanceError(null)
-      setVaultBalance(0)
-      setVaultRawBalance(0)
-      setDfTokens(0)
-      return 0
-    }
-
+    const identity = prepareIdentity(address, activeAddress.current === address ? activeAsset.current : undefined)
+    const generation = ++requestGeneration.current
+    setIsLoadingBalances(true)
     try {
-      setBalanceError(null)
-      const payload = await vaultBalanceRequest.fetch(address)
-      const normalized = normalizeUSDC(payload.underlyingTotal ?? 0)
-      const rawTotal =
-        typeof payload.underlyingTotalRaw === 'number' && Number.isFinite(payload.underlyingTotalRaw)
-          ? payload.underlyingTotalRaw
-          : 0
-      setVaultBalance(normalized)
-      setVaultRawBalance(rawTotal)
-      setDfTokens(
-        typeof payload.dfTokens === 'number' && Number.isFinite(payload.dfTokens)
-          ? payload.dfTokens
-          : 0
-      )
-      return normalized
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to load Mercato vault balance'
-      if (!isRateLimitMessage(message)) {
-        setBalanceError(message)
-        setVaultBalance(0)
-        setVaultRawBalance(0)
-        setDfTokens(0)
-        return 0
-      }
-      return vaultBalanceRef.current
+      return await fetchVaultBalance(address, identity, generation)
+    } finally {
+      if (generation === requestGeneration.current) setIsLoadingBalances(false)
     }
-  }, [])
+  }, [fetchVaultBalance, prepareIdentity])
 
   const loadUserBalances = useCallback(
     async (address: string, assetContract?: string) => {
+      const identity = prepareIdentity(address, assetContract)
+      const generation = ++requestGeneration.current
       setIsLoadingBalances(true)
       try {
         const [vaultAmt, walletAmt] = await Promise.all([
-          getVaultBalance(address),
-          getVaultAssetBalance(address, assetContract),
+          fetchVaultBalance(address, identity, generation),
+          fetchWalletBalance(address, assetContract, identity, generation),
         ])
         return {
           vaultBalance: normalizeUSDC(vaultAmt),
           walletBalance: normalizeUSDC(walletAmt),
         }
       } finally {
-        setIsLoadingBalances(false)
+        if (generation === requestGeneration.current) setIsLoadingBalances(false)
       }
     },
-    [getVaultAssetBalance, getVaultBalance],
+    [fetchVaultBalance, fetchWalletBalance, prepareIdentity],
   )
 
   const loadUserBalancesRef = useRef(loadUserBalances)
@@ -146,5 +253,7 @@ export function useVaultBalance() {
     vaultRawBalanceRef,
     getVaultBalance,
     loadUserBalancesRef,
+    invalidateBalanceRequests,
+    resetBalances,
   }
 }
